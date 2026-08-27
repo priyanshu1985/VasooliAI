@@ -1,0 +1,57 @@
+# Environment variables & secrets (CRITICAL: Keep all API keys and credentials out of Git)
+.env
+.env.*
+*.env
+**/.env
+**/.env.*
+*.pem
+*.key
+kaggle.json
+!**/.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Node / Frontend
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+frontend/dist/
+frontend/dist-ssr/
+*.local
+
+# ML raw data & generated charts (per docs/rules.md and docs/architecture.md)
+ml/data/kaggle_raw/
+ml/data/failed_payments.csv
+ml/outputs/*.png
+*.zip
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
