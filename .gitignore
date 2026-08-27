@@ -44,11 +44,14 @@ frontend/dist/
 frontend/dist-ssr/
 *.local
 
-# ML raw data & generated charts (per docs/rules.md and docs/architecture.md)
-ml/data/kaggle_raw/
-ml/data/failed_payments.csv
-ml/outputs/*.png
+# ML raw data, downloaded datasets & generated artifacts (per docs/rules.md)
+ml/data/
+*.csv
+*.tsv
 *.zip
+*.tar.gz
+*.parquet
+ml/outputs/*.png
 
 # OS / Editor
 .DS_Store
