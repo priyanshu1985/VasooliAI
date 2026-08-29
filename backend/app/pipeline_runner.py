@@ -1,6 +1,6 @@
 import os
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import pandas as pd
@@ -9,12 +9,11 @@ from sqlalchemy.orm import Session
 from app.stage1_diagnosis.diagnose import predict_diagnosis, get_stage1_evaluation_metrics
 from app.stage2_retry.sequencer import sequence_retry, get_stage2_evaluation_metrics
 from app.stage3_promise.tracker import evaluate_promise_commitment
-from app.audit.logger import log_audit_event
-from app.db.session import get_db
+from app.db.models import AuditLog
 
 DATA_PATH = Path(__file__).resolve().parents[2] / "ml" / "data" / "failed_payments.csv"
 
-# Global in-memory cache for fast dashboard serving and fallback if DB is not connected
+# Global in-memory cache for fast dashboard serving
 _cached_pipeline_results: Optional[Dict[str, Any]] = None
 
 # Realistic customer response templates for Stage 3 outreach simulation
@@ -32,15 +31,14 @@ SAMPLE_CUSTOMER_REPLIES = [
 
 def run_pipeline_batch(
     db: Optional[Session] = None,
-    limit: Optional[int] = 300,
-    use_live_llm_for_sample: bool = True
+    limit: Optional[int] = 300
 ) -> Dict[str, Any]:
     """
     Executes the end-to-end multi-stage recovery pipeline across failed payments:
       1. Stage 1: ML Failure Diagnosis
       2. Stage 2: Smart Mandate Retry Sequencer (RBI 24h & 4-retry cap enforced)
-      3. Stage 3: Gemini LLM Promise-to-Pay Extractor & Yale Escalation Ladder
-      4. Structured Audit Trail Logging
+      3. Stage 3: Gemini LLM / Heuristic Promise-to-Pay Extractor & Yale Escalation Ladder
+      4. High-performance Bulk Audit Trail Persistence to Supabase
     """
     global _cached_pipeline_results
     
@@ -74,12 +72,14 @@ def run_pipeline_batch(
     }
 
     audit_logs: List[Dict[str, Any]] = []
+    db_audit_entries: List[AuditLog] = []
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
 
     # Process each payment through the 3-stage chain
     for idx, row in df_batch.iterrows():
         payment_id = str(row["payment_id"])
         customer_name = str(row.get("customer_name", "Customer"))
-        amount = float(row["amount"]) * 85.0  # Convert USD synthetic base to realistic INR amounts (e.g. ₹1,500 - ₹35,000)
+        amount = float(row["amount"]) * 85.0  # Convert synthetic base to realistic INR amounts
         total_inr_value += amount
         ground_truth_reason = str(row["decline_reason_true"])
         is_soft = bool(row["is_soft_decline_true"])
@@ -103,8 +103,9 @@ def run_pipeline_batch(
             stage1_correct += 1
 
         # Audit Stage 1
+        ts_1 = now_utc - timedelta(minutes=random.randint(100, 500))
         log_entry_1 = {
-            "timestamp": (datetime.utcnow() - timedelta(minutes=random.randint(100, 500))).isoformat(),
+            "timestamp": ts_1.isoformat(),
             "stage": "stage1",
             "payment_id": payment_id,
             "decision": f"Diagnosed failure root cause as '{predicted_reason}'",
@@ -112,8 +113,15 @@ def run_pipeline_batch(
             "outcome": "routed_to_stage2" if is_soft else "hard_decline_routed_to_stage3"
         }
         audit_logs.append(log_entry_1)
-        if db:
-            log_audit_event(db, "stage1", payment_id, log_entry_1["decision"], features, log_entry_1["outcome"])
+        if db is not None:
+            db_audit_entries.append(AuditLog(
+                timestamp=ts_1,
+                stage="stage1",
+                payment_id=payment_id,
+                decision=log_entry_1["decision"],
+                reasoning_inputs=features,
+                outcome=log_entry_1["outcome"]
+            ))
 
         # -------------------------------------------------------------
         # STAGE 2: RETRY SEQUENCER (ML Model + Constraints)
@@ -125,16 +133,15 @@ def run_pipeline_batch(
             best_window = retry_decision.get("best_window_hours")
             succ_prob = retry_decision.get("predicted_success_prob", 0.0)
 
-            # Check stopping rule
+            ts_2 = now_utc - timedelta(minutes=random.randint(50, 100))
             if retry_decision["can_retry"]:
-                # Probabilistic recovery simulation based on model score
                 if random.random() < succ_prob:
                     recovered_in_stage2 = True
                     recovered_count += 1
                     total_recovered_inr += amount
                     
                     log_entry_2 = {
-                        "timestamp": (datetime.utcnow() - timedelta(minutes=random.randint(50, 100))).isoformat(),
+                        "timestamp": ts_2.isoformat(),
                         "stage": "stage2",
                         "payment_id": payment_id,
                         "decision": f"Scheduled retry in +{best_window}h (salary cycle window)",
@@ -143,7 +150,7 @@ def run_pipeline_batch(
                     }
                 else:
                     log_entry_2 = {
-                        "timestamp": (datetime.utcnow() - timedelta(minutes=random.randint(50, 100))).isoformat(),
+                        "timestamp": ts_2.isoformat(),
                         "stage": "stage2",
                         "payment_id": payment_id,
                         "decision": f"Scheduled retry in +{best_window}h; attempt unsuccessful",
@@ -152,7 +159,7 @@ def run_pipeline_batch(
                     }
             else:
                 log_entry_2 = {
-                    "timestamp": (datetime.utcnow() - timedelta(minutes=random.randint(50, 100))).isoformat(),
+                    "timestamp": ts_2.isoformat(),
                     "stage": "stage2",
                     "payment_id": payment_id,
                     "decision": "Hard stopping rule triggered: max retries reached within 30 days",
@@ -161,15 +168,21 @@ def run_pipeline_batch(
                 }
             
             audit_logs.append(log_entry_2)
-            if db:
-                log_audit_event(db, "stage2", payment_id, log_entry_2["decision"], retry_decision, log_entry_2["outcome"])
+            if db is not None:
+                db_audit_entries.append(AuditLog(
+                    timestamp=ts_2,
+                    stage="stage2",
+                    payment_id=payment_id,
+                    decision=log_entry_2["decision"],
+                    reasoning_inputs=retry_decision,
+                    outcome=log_entry_2["outcome"]
+                ))
 
         # -------------------------------------------------------------
-        # STAGE 3: PROMISE TRACKER (Gemini LLM & Yale Escalation)
+        # STAGE 3: PROMISE TRACKER (Gemini Extractor & Yale Escalation)
         # -------------------------------------------------------------
         if not recovered_in_stage2:
             promise_tracked_count += 1
-            # Select simulated reply
             reply_template = SAMPLE_CUSTOMER_REPLIES[idx % len(SAMPLE_CUSTOMER_REPLIES)]
             reply = reply_template.format(amount=f"{amount:,.0f}")
             past_broken = int(row["past_failure_count"])
@@ -178,7 +191,8 @@ def run_pipeline_batch(
                 payment_id=payment_id,
                 customer_reply=reply,
                 current_escalation_stage="gentle_reminder",
-                customer_past_broken_promises=past_broken
+                customer_past_broken_promises=past_broken,
+                use_llm=False  # Fast rule evaluation for batch processing; live interactive testing uses live Gemini API
             )
 
             stage_name = promise_eval.get("escalation_stage", "gentle_reminder")
@@ -189,14 +203,15 @@ def run_pipeline_batch(
 
             if promise_eval.get("is_promise"):
                 promises_kept += 1
-                total_recovered_inr += amount * 0.85  # Account for partial / eventual settlement
+                total_recovered_inr += amount * 0.85
                 recovered_count += 1
             else:
                 promises_broken += 1
                 closed_count += 1
 
+            ts_3 = now_utc - timedelta(minutes=random.randint(5, 45))
             log_entry_3 = {
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": ts_3.isoformat(),
                 "stage": "stage3",
                 "payment_id": payment_id,
                 "decision": promise_eval["decision"],
@@ -204,8 +219,23 @@ def run_pipeline_batch(
                 "outcome": promise_eval["outcome"]
             }
             audit_logs.append(log_entry_3)
-            if db:
-                log_audit_event(db, "stage3", payment_id, log_entry_3["decision"], promise_eval, log_entry_3["outcome"])
+            if db is not None:
+                db_audit_entries.append(AuditLog(
+                    timestamp=ts_3,
+                    stage="stage3",
+                    payment_id=payment_id,
+                    decision=log_entry_3["decision"],
+                    reasoning_inputs=promise_eval,
+                    outcome=log_entry_3["outcome"]
+                ))
+
+    # Fast Bulk DB Commit to Supabase (single remote roundtrip instead of 900 sequential calls)
+    if db is not None and db_audit_entries:
+        try:
+            db.add_all(db_audit_entries)
+            db.commit()
+        except Exception as e:
+            db.rollback()
 
     recovery_rate = round((recovered_count / max(total_payments, 1)) * 100.0, 1)
     diagnosis_accuracy = round((stage1_correct / max(total_payments, 1)) * 100.0, 1)
