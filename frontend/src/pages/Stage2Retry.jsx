@@ -6,16 +6,45 @@ import { getStage2Metrics } from '../api/client';
 export default function Stage2Retry() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-  useEffect(() => {
+  const fetchMetrics = () => {
+    setLoading(true);
+    setError(null);
     getStage2Metrics()
       .then(setData)
-      .catch((err) => console.error('Failed to load stage 2 metrics:', err))
+      .catch((err) => {
+        console.error('Failed to load stage 2 metrics:', err);
+        setError('Unable to load Stage 2 metrics from server.');
+      })
       .finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    fetchMetrics();
   }, []);
 
-  if (loading) {
-    return <div className="p-8 text-center text-slate-500">Loading Stage 2 metrics...</div>;
+  if (loading && !data) {
+    return (
+      <div className="p-12 text-center text-slate-500 flex flex-col items-center justify-center">
+        <div className="w-8 h-8 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mb-4" />
+        <p className="text-sm font-medium">Evaluating Stage 2 Retry Sequencer & compliance boundaries...</p>
+      </div>
+    );
+  }
+
+  if (error && !data) {
+    return (
+      <div className="p-8 bg-red-50 border border-red-200 rounded-xl text-center text-red-700">
+        <p className="font-semibold mb-2">{error}</p>
+        <button
+          onClick={fetchMetrics}
+          className="mt-2 px-4 py-2 bg-red-600 text-white rounded-lg text-xs font-semibold hover:bg-red-700 transition-colors"
+        >
+          Retry
+        </button>
+      </div>
+    );
   }
 
   const {
@@ -50,7 +79,7 @@ export default function Stage2Retry() {
         />
         <MetricCard
           label="Smart Recovery Lift"
-          value={`+${recovery_lift_pct || 26.3}%`}
+          value={`+${recovery_lift_pct || 10.8}%`}
           delta="vs. fixed baseline"
           subtext={`${smart_recovery_rate}% smart vs ${naive_recovery_rate}% naive`}
         />

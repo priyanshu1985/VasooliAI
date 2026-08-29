@@ -71,6 +71,27 @@ export async function getAuditTrail(params = {}) {
 }
 
 /**
+ * POST /api/pipeline/run
+ * Triggers an end-to-end multi-stage batch execution.
+ */
+export async function triggerPipelineRun(limit = 300) {
+  return request(`/api/pipeline/run?limit=${limit}`, {
+    method: 'POST',
+  });
+}
+
+/**
+ * POST /api/stage3/extract-promise
+ * Interactive live test extracting payment promise from freeform customer text with Gemini LLM.
+ */
+export async function extractPromiseLive(customerReply) {
+  return request('/api/stage3/extract-promise', {
+    method: 'POST',
+    body: JSON.stringify({ customer_reply: customerReply }),
+  });
+}
+
+/**
  * GET /health
  */
 export async function checkHealth() {

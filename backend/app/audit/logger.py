@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 import logging
 from sqlalchemy.orm import Session
@@ -25,10 +25,11 @@ def log_audit_event(
       - reasoning_inputs: JSON dict of model inputs / rules checked
       - outcome: result or status (e.g. 'scheduled', 'success', 'stopped')
     """
+    now_utc = datetime.now(timezone.utc)
     event_data = {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": now_utc.isoformat(),
         "stage": stage,
-        "payment_id": payment_id,
+        "payment_id": str(payment_id),
         "decision": decision,
         "reasoning_inputs": reasoning_inputs,
         "outcome": outcome
@@ -37,7 +38,7 @@ def log_audit_event(
     if db is not None:
         try:
             audit_entry = AuditLog(
-                timestamp=datetime.utcnow(),
+                timestamp=now_utc.replace(tzinfo=None),
                 stage=stage,
                 payment_id=str(payment_id),
                 decision=decision,

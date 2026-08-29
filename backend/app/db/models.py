@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import (
     Column,
     Integer,
@@ -9,10 +9,16 @@ from sqlalchemy import (
     JSON,
     Boolean,
     Text,
+    func,
 )
 from sqlalchemy.orm import relationship
 
 from app.db.session import Base
+
+
+def utc_now():
+    """Returns current UTC timestamp without timezone offset for naive DB columns."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 class Payment(Base):
@@ -27,8 +33,8 @@ class Payment(Base):
     failure_code = Column(String(64), nullable=True)
     retry_count = Column(Integer, default=0, nullable=False)
     subscription_age_days = Column(Integer, default=0, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
     diagnoses = relationship("Diagnosis", back_populates="payment", cascade="all, delete-orphan")
     retries = relationship("Retry", back_populates="payment", cascade="all, delete-orphan")
@@ -43,7 +49,7 @@ class Diagnosis(Base):
     predicted_reason = Column(String(64), nullable=False)
     confidence_score = Column(Float, nullable=False)
     input_features = Column(JSON, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
 
     payment = relationship("Payment", back_populates="diagnoses")
 
@@ -59,7 +65,7 @@ class Retry(Base):
     predicted_success_prob = Column(Float, nullable=False)
     outcome = Column(String(32), default="scheduled", nullable=False)  # scheduled, success, failed, skipped
     executed_at = Column(DateTime, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
 
     payment = relationship("Payment", back_populates="retries")
 
@@ -76,8 +82,8 @@ class Promise(Base):
     confidence_score = Column(Float, nullable=False)
     status = Column(String(32), default="pending", nullable=False)  # pending, kept, broken, cancelled
     escalation_stage = Column(String(32), default="gentle_reminder", nullable=False)  # gentle_reminder, firmer_nudge, final_notice, stopped
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)
 
     payment = relationship("Payment", back_populates="promises")
 
@@ -86,7 +92,7 @@ class AuditLog(Base):
     __tablename__ = "audit_log"
 
     id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime, default=datetime.utcnow, index=True, nullable=False)
+    timestamp = Column(DateTime, default=utc_now, index=True, nullable=False)
     stage = Column(String(32), index=True, nullable=False)  # stage1, stage2, stage3, system
     payment_id = Column(String(128), index=True, nullable=False)
     decision = Column(String(255), nullable=False)
