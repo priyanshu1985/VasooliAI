@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, Query, Body, HTTPException
+import os
+import json
+from fastapi import APIRouter, Depends, Query, Body, HTTPException, Request, Header
 from typing import Dict, Any, List, Optional
 from sqlalchemy.orm import Session
 
@@ -6,6 +8,7 @@ from app.db.session import get_db
 from app.db.models import AuditLog
 from app.pipeline_runner import get_pipeline_results, run_pipeline_batch
 from app.stage3_promise.extractor import extract_promise
+from app.webhook.razorpay import verify_razorpay_signature, process_razorpay_webhook_event
 from app.api.schemas import (
     OverviewResponse,
     Stage1MetricsResponse,
@@ -73,7 +76,6 @@ def get_audit_trail(
     Audit Trail endpoint returning searchable/sortable historical decision rows.
     Data Contract per docs/design.md section 5.
     """
-    # 1. Try fetching from live database if table has entries
     if db is not None:
         try:
             query = db.query(AuditLog)
@@ -103,7 +105,6 @@ def get_audit_trail(
         except Exception:
             pass
 
-    # 2. Fall back to pipeline execution audit log in memory
     pipeline_data = get_pipeline_results()
     all_rows = pipeline_data["audit"]["rows"]
 
@@ -149,3 +150,44 @@ def live_extract_promise(payload: ExtractPromiseRequest):
     if not payload.customer_reply.strip():
         raise HTTPException(status_code=400, detail="Customer reply text cannot be empty.")
     return extract_promise(payload.customer_reply)
+
+
+@router.post("/webhook/razorpay", tags=["webhook"])
+async def razorpay_webhook_endpoint(
+    request: Request,
+    x_razorpay_signature: Optional[str] = Header(None, alias="X-Razorpay-Signature"),
+    db: Optional[Session] = Depends(get_db)
+):
+    """
+    Razorpay Webhook receiver for live payment/subscription degradation events.
+    1. Authenticates webhook with HMAC-SHA256 signature verification.
+    2. Ingests payload and triggers multi-stage recovery pipeline.
+    3. Streams immutable decision records to audit trail with tag 'razorpay_webhook'.
+    4. Returns 200 OK immediately to satisfy gateway SLA.
+    """
+    raw_body = await request.body()
+    signature = (
+        x_razorpay_signature
+        or request.headers.get("x-razorpay-signature")
+        or request.headers.get("X-Razorpay-Signature")
+    )
+    webhook_secret = os.getenv("RAZORPAY_WEBHOOK_SECRET")
+
+    # Verify signature
+    if not verify_razorpay_signature(raw_body, signature, webhook_secret):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or missing Razorpay webhook signature."
+        )
+
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON webhook payload.")
+
+    result = process_razorpay_webhook_event(payload, db=db)
+    return {
+        "status": "success",
+        "message": "Razorpay event ingested and processed through recovery pipeline.",
+        "result": result
+    }

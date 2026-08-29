@@ -29,12 +29,165 @@ SAMPLE_CUSTOMER_REPLIES = [
 ]
 
 
+def process_single_payment(
+    payment_id: str,
+    amount_inr: float,
+    features: Dict[str, Any],
+    is_soft: Optional[bool] = None,
+    customer_reply: Optional[str] = None,
+    db: Optional[Session] = None,
+    source: str = "synthetic_batch"
+) -> Dict[str, Any]:
+    """
+    Executes the 3-stage recovery pipeline on a SINGLE failed payment event.
+    Reused identically by both batch simulation and live Razorpay webhook.
+    """
+    now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
+    audit_entries: List[Dict[str, Any]] = []
+    db_audit_entries: List[AuditLog] = []
+
+    # -------------------------------------------------------------
+    # STAGE 1: DIAGNOSIS (ML Classifier)
+    # -------------------------------------------------------------
+    diagnosis = predict_diagnosis(features)
+    predicted_reason = diagnosis["predicted_reason"]
+    conf_score = diagnosis["confidence_score"]
+
+    if is_soft is None:
+        # Determine soft vs hard decline from predicted category
+        is_soft = predicted_reason == "insufficient_funds_or_technical"
+
+    log_entry_1 = {
+        "timestamp": now_utc.isoformat(),
+        "stage": "stage1",
+        "payment_id": payment_id,
+        "decision": f"Diagnosed failure root cause as '{predicted_reason}'",
+        "reasoning": f"amount=₹{amount_inr:,.0f}, sub_age={features.get('subscription_age_days', 0)}d, retry_count={features.get('retry_count_so_far', 0)} (confidence: {conf_score:.2f}) [source: {source}]",
+        "outcome": "routed_to_stage2" if is_soft else "hard_decline_routed_to_stage3"
+    }
+    audit_entries.append(log_entry_1)
+    if db is not None:
+        db_audit_entries.append(AuditLog(
+            timestamp=now_utc,
+            stage="stage1",
+            payment_id=payment_id,
+            decision=log_entry_1["decision"],
+            reasoning_inputs={**features, "source": source, "diagnosis": diagnosis},
+            outcome=log_entry_1["outcome"]
+        ))
+
+    # -------------------------------------------------------------
+    # STAGE 2: RETRY SEQUENCER (ML Model + Constraints)
+    # -------------------------------------------------------------
+    recovered_in_stage2 = False
+    retry_decision: Optional[Dict[str, Any]] = None
+
+    if is_soft:
+        retry_decision = sequence_retry(features, retry_count_in_30_days=int(features.get("retry_count_so_far", 0)))
+        best_window = retry_decision.get("best_window_hours")
+        succ_prob = retry_decision.get("predicted_success_prob", 0.0)
+
+        if retry_decision["can_retry"]:
+            # Probabilistic recovery simulation based on model score
+            if random.random() < succ_prob:
+                recovered_in_stage2 = True
+                outcome = "recovered"
+                decision = f"Scheduled retry in +{best_window}h (salary cycle window)"
+                reasoning = f"prob_success={succ_prob:.2f}, compliant with 24h RBI pre-debit notice window [source: {source}]"
+            else:
+                outcome = "escalated_to_stage3"
+                decision = f"Scheduled retry in +{best_window}h; attempt unsuccessful"
+                reasoning = f"prob_success={succ_prob:.2f}. Approaching max retry threshold. [source: {source}]"
+        else:
+            outcome = "escalated_to_stage3"
+            decision = "Hard stopping rule triggered: max retries reached within 30 days"
+            reasoning = f"retry_count=4 in 30 days cap. Hard stop enforced to prevent bank penalties. [source: {source}]"
+
+        log_entry_2 = {
+            "timestamp": now_utc.isoformat(),
+            "stage": "stage2",
+            "payment_id": payment_id,
+            "decision": decision,
+            "reasoning": reasoning,
+            "outcome": outcome
+        }
+        audit_entries.append(log_entry_2)
+        if db is not None:
+            db_audit_entries.append(AuditLog(
+                timestamp=now_utc,
+                stage="stage2",
+                payment_id=payment_id,
+                decision=decision,
+                reasoning_inputs={**retry_decision, "source": source},
+                outcome=outcome
+            ))
+
+    # -------------------------------------------------------------
+    # STAGE 3: PROMISE TRACKER (Gemini Extractor & Yale Escalation)
+    # -------------------------------------------------------------
+    promise_eval: Optional[Dict[str, Any]] = None
+    if not recovered_in_stage2:
+        if not customer_reply:
+            customer_reply = "Salary will be credited on 2nd of the month, please retry then."
+
+        promise_eval = evaluate_promise_commitment(
+            payment_id=payment_id,
+            customer_reply=customer_reply,
+            current_escalation_stage="gentle_reminder",
+            customer_past_broken_promises=int(features.get("past_failure_count", 0)),
+            use_llm=(source == "razorpay_webhook")  # Use live Gemini LLM for live webhook events
+        )
+
+        log_entry_3 = {
+            "timestamp": now_utc.isoformat(),
+            "stage": "stage3",
+            "payment_id": payment_id,
+            "decision": promise_eval["decision"],
+            "reasoning": f"Customer reply: '{customer_reply[:45]}...'. {promise_eval['reasoning'][:80]} [source: {source}]",
+            "outcome": promise_eval["outcome"]
+        }
+        audit_entries.append(log_entry_3)
+        if db is not None:
+            db_audit_entries.append(AuditLog(
+                timestamp=now_utc,
+                stage="stage3",
+                payment_id=payment_id,
+                decision=promise_eval["decision"],
+                reasoning_inputs={**promise_eval, "source": source},
+                outcome=promise_eval["outcome"]
+            ))
+
+    # Save to DB if session provided
+    if db is not None and db_audit_entries:
+        try:
+            db.add_all(db_audit_entries)
+            db.commit()
+        except Exception:
+            db.rollback()
+
+    # Prepend to in-memory cache if exists
+    global _cached_pipeline_results
+    if _cached_pipeline_results and "audit" in _cached_pipeline_results:
+        _cached_pipeline_results["audit"]["rows"] = audit_entries + _cached_pipeline_results["audit"]["rows"]
+        _cached_pipeline_results["audit"]["total_count"] += len(audit_entries)
+
+    return {
+        "payment_id": payment_id,
+        "amount_inr": amount_inr,
+        "source": source,
+        "stage1_diagnosis": diagnosis,
+        "stage2_retry": retry_decision,
+        "stage3_promise": promise_eval,
+        "audit_entries": audit_entries
+    }
+
+
 def run_pipeline_batch(
     db: Optional[Session] = None,
     limit: Optional[int] = 300
 ) -> Dict[str, Any]:
     """
-    Executes the end-to-end multi-stage recovery pipeline across failed payments:
+    Executes the end-to-end multi-stage recovery pipeline across failed payments batch:
       1. Stage 1: ML Failure Diagnosis
       2. Stage 2: Smart Mandate Retry Sequencer (RBI 24h & 4-retry cap enforced)
       3. Stage 3: Gemini LLM / Heuristic Promise-to-Pay Extractor & Yale Escalation Ladder
@@ -84,9 +237,6 @@ def run_pipeline_batch(
         ground_truth_reason = str(row["decline_reason_true"])
         is_soft = bool(row["is_soft_decline_true"])
 
-        # -------------------------------------------------------------
-        # STAGE 1: DIAGNOSIS (ML Classifier)
-        # -------------------------------------------------------------
         features = {
             "amount": float(row["amount"]),
             "hour_of_day": int(row["hour_of_day"]),
@@ -95,6 +245,8 @@ def run_pipeline_batch(
             "past_failure_count": int(row["past_failure_count"]),
             "subscription_age_days": int(row["subscription_age_days"]),
         }
+        
+        # Stage 1
         diagnosis = predict_diagnosis(features)
         predicted_reason = diagnosis["predicted_reason"]
         conf_score = diagnosis["confidence_score"]
@@ -102,14 +254,13 @@ def run_pipeline_batch(
         if predicted_reason == ground_truth_reason:
             stage1_correct += 1
 
-        # Audit Stage 1
         ts_1 = now_utc - timedelta(minutes=random.randint(100, 500))
         log_entry_1 = {
             "timestamp": ts_1.isoformat(),
             "stage": "stage1",
             "payment_id": payment_id,
             "decision": f"Diagnosed failure root cause as '{predicted_reason}'",
-            "reasoning": f"amount=₹{amount:,.0f}, sub_age={features['subscription_age_days']}d, retry_count={features['retry_count_so_far']} (confidence: {conf_score:.2f})",
+            "reasoning": f"amount=₹{amount:,.0f}, sub_age={features['subscription_age_days']}d, retry_count={features['retry_count_so_far']} (confidence: {conf_score:.2f}) [source: synthetic_batch]",
             "outcome": "routed_to_stage2" if is_soft else "hard_decline_routed_to_stage3"
         }
         audit_logs.append(log_entry_1)
@@ -119,13 +270,11 @@ def run_pipeline_batch(
                 stage="stage1",
                 payment_id=payment_id,
                 decision=log_entry_1["decision"],
-                reasoning_inputs=features,
+                reasoning_inputs={**features, "source": "synthetic_batch"},
                 outcome=log_entry_1["outcome"]
             ))
 
-        # -------------------------------------------------------------
-        # STAGE 2: RETRY SEQUENCER (ML Model + Constraints)
-        # -------------------------------------------------------------
+        # Stage 2
         recovered_in_stage2 = False
         if is_soft:
             retried_count += 1
@@ -145,7 +294,7 @@ def run_pipeline_batch(
                         "stage": "stage2",
                         "payment_id": payment_id,
                         "decision": f"Scheduled retry in +{best_window}h (salary cycle window)",
-                        "reasoning": f"prob_success={succ_prob:.2f}, compliant with 24h RBI pre-debit notice window",
+                        "reasoning": f"prob_success={succ_prob:.2f}, compliant with 24h RBI pre-debit notice window [source: synthetic_batch]",
                         "outcome": "recovered"
                     }
                 else:
@@ -154,7 +303,7 @@ def run_pipeline_batch(
                         "stage": "stage2",
                         "payment_id": payment_id,
                         "decision": f"Scheduled retry in +{best_window}h; attempt unsuccessful",
-                        "reasoning": f"prob_success={succ_prob:.2f}. Approaching max retry threshold.",
+                        "reasoning": f"prob_success={succ_prob:.2f}. Approaching max retry threshold. [source: synthetic_batch]",
                         "outcome": "escalated_to_stage3"
                     }
             else:
@@ -163,7 +312,7 @@ def run_pipeline_batch(
                     "stage": "stage2",
                     "payment_id": payment_id,
                     "decision": "Hard stopping rule triggered: max retries reached within 30 days",
-                    "reasoning": "retry_count=4 in 30 days cap. Hard stop enforced to prevent bank penalties.",
+                    "reasoning": "retry_count=4 in 30 days cap. Hard stop enforced to prevent bank penalties. [source: synthetic_batch]",
                     "outcome": "escalated_to_stage3"
                 }
             
@@ -174,13 +323,11 @@ def run_pipeline_batch(
                     stage="stage2",
                     payment_id=payment_id,
                     decision=log_entry_2["decision"],
-                    reasoning_inputs=retry_decision,
+                    reasoning_inputs={**retry_decision, "source": "synthetic_batch"},
                     outcome=log_entry_2["outcome"]
                 ))
 
-        # -------------------------------------------------------------
-        # STAGE 3: PROMISE TRACKER (Gemini Extractor & Yale Escalation)
-        # -------------------------------------------------------------
+        # Stage 3
         if not recovered_in_stage2:
             promise_tracked_count += 1
             reply_template = SAMPLE_CUSTOMER_REPLIES[idx % len(SAMPLE_CUSTOMER_REPLIES)]
@@ -192,7 +339,7 @@ def run_pipeline_batch(
                 customer_reply=reply,
                 current_escalation_stage="gentle_reminder",
                 customer_past_broken_promises=past_broken,
-                use_llm=False  # Fast rule evaluation for batch processing; live interactive testing uses live Gemini API
+                use_llm=False
             )
 
             stage_name = promise_eval.get("escalation_stage", "gentle_reminder")
@@ -215,7 +362,7 @@ def run_pipeline_batch(
                 "stage": "stage3",
                 "payment_id": payment_id,
                 "decision": promise_eval["decision"],
-                "reasoning": f"Customer reply: '{reply[:45]}...'. {promise_eval['reasoning'][:80]}",
+                "reasoning": f"Customer reply: '{reply[:45]}...'. {promise_eval['reasoning'][:80]} [source: synthetic_batch]",
                 "outcome": promise_eval["outcome"]
             }
             audit_logs.append(log_entry_3)
@@ -225,16 +372,16 @@ def run_pipeline_batch(
                     stage="stage3",
                     payment_id=payment_id,
                     decision=log_entry_3["decision"],
-                    reasoning_inputs=promise_eval,
+                    reasoning_inputs={**promise_eval, "source": "synthetic_batch"},
                     outcome=log_entry_3["outcome"]
                 ))
 
-    # Fast Bulk DB Commit to Supabase (single remote roundtrip instead of 900 sequential calls)
+    # Fast Bulk DB Commit to Supabase
     if db is not None and db_audit_entries:
         try:
             db.add_all(db_audit_entries)
             db.commit()
-        except Exception as e:
+        except Exception:
             db.rollback()
 
     recovery_rate = round((recovered_count / max(total_payments, 1)) * 100.0, 1)

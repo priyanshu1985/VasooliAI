@@ -94,6 +94,24 @@ npm run dev
 
 ---
 
+### 3. Live Razorpay Webhooks (via Cloudflare Tunnel)
+
+To receive live payment failure and subscription degradation webhooks from the Razorpay Dashboard:
+
+```powershell
+# Expose local FastAPI backend on a Cloudflare HTTPS tunnel
+& "C:\Program Files (x86)\cloudflared\cloudflared.exe" tunnel --url http://localhost:8000
+```
+
+1. Copy your generated `https://<subdomain>.trycloudflare.com` URL from the terminal output.
+2. In **Razorpay Dashboard** $\rightarrow$ **Settings** $\rightarrow$ **Webhooks**:
+   - **Webhook URL:** `https://<subdomain>.trycloudflare.com/api/webhook/razorpay`
+   - **Secret:** The same secret configured in `backend/.env` under `RAZORPAY_WEBHOOK_SECRET`
+   - **Active Events:** `subscription.pending`, `payment.failed`, `subscription.charged`
+3. Any failed recurring charge or subscription event will automatically trigger the 3-stage recovery pipeline and stream to the audit trail.
+
+---
+
 ## 🛠️ Tech Stack
 
 - **Backend:** FastAPI (Python 3.10+), SQLAlchemy 2.0, Pydantic v2

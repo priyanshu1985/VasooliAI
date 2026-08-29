@@ -77,7 +77,14 @@ export default function AuditTrailTable({ rows = [], totalCount = 0 }) {
                     </span>
                   </td>
                   <td className="py-3 px-4 font-mono font-medium text-slate-900 whitespace-nowrap">
-                    {row.payment_id}
+                    <div className="flex items-center gap-1.5">
+                      <span>{row.payment_id}</span>
+                      {row.reasoning?.includes('razorpay_webhook') && (
+                        <span className="inline-flex items-center px-1.5 py-0.2 rounded text-2xs font-semibold bg-blue-50 text-blue-700 border border-blue-200">
+                          Razorpay Live
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="py-3 px-4 font-medium text-slate-800">{row.decision}</td>
                   <td className="py-3 px-4 text-slate-500 max-w-xs truncate">{row.reasoning}</td>

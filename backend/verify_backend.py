@@ -1,5 +1,8 @@
 import os
 import sys
+import json
+import hmac
+import hashlib
 from pathlib import Path
 from fastapi.testclient import TestClient
 
@@ -76,6 +79,59 @@ print("Live extract promise:", r.status_code, r.json())
 assert r.status_code == 200
 assert "is_promise" in r.json()
 assert "confidence" in r.json()
+
+print("\n--- Testing POST /api/webhook/razorpay (Security & Ingestion) ---")
+test_secret = "test_webhook_secret_key_123"
+os.environ["RAZORPAY_WEBHOOK_SECRET"] = test_secret
+
+sample_payload = {
+    "entity": "event",
+    "event": "subscription.pending",
+    "contains": ["subscription", "payment"],
+    "payload": {
+        "payment": {
+            "entity": {
+                "id": "pay_test_live_rzp_99",
+                "amount": 250000,
+                "currency": "INR",
+                "status": "failed",
+                "error_code": "BAD_REQUEST_ERROR",
+                "error_description": "Card expired on network",
+                "error_reason": "card_expired"
+            }
+        },
+        "subscription": {
+            "entity": {
+                "id": "sub_test_live_rzp_99",
+                "status": "pending",
+                "current_amount": 250000
+            }
+        }
+    }
+}
+raw_bytes = json.dumps(sample_payload).encode("utf-8")
+valid_sig = hmac.new(test_secret.encode("utf-8"), raw_bytes, hashlib.sha256).hexdigest()
+
+# 1. Test missing / invalid signature
+r_invalid = client.post(
+    "/api/webhook/razorpay",
+    content=raw_bytes,
+    headers={"Content-Type": "application/json", "X-Razorpay-Signature": "invalid_signature_hex"}
+)
+print("Invalid signature response:", r_invalid.status_code, r_invalid.json())
+assert r_invalid.status_code == 400
+
+# 2. Test valid signature & pipeline execution
+r_valid = client.post(
+    "/api/webhook/razorpay",
+    content=raw_bytes,
+    headers={"Content-Type": "application/json", "X-Razorpay-Signature": valid_sig}
+)
+print("Valid signature response status:", r_valid.status_code)
+assert r_valid.status_code == 200
+assert r_valid.json()["status"] == "success"
+assert r_valid.json()["result"]["payment_id"] == "pay_test_live_rzp_99"
+assert r_valid.json()["result"]["amount_inr"] == 2500.0
 
 print("\n==========================================")
 print("ALL BACKEND SUITE TESTS PASSED WITH 100% SUCCESS!")
