@@ -92,6 +92,21 @@ export async function extractPromiseLive(customerReply) {
 }
 
 /**
+ * POST /api/audit/ask
+ * Plain-English QA over audit trail using Gemini LLM.
+ */
+export async function askAuditTrail({ question, payment_id, time_range }) {
+  return request('/api/audit/ask', {
+    method: 'POST',
+    body: JSON.stringify({
+      question,
+      payment_id: payment_id || undefined,
+      time_range: time_range || undefined,
+    }),
+  });
+}
+
+/**
  * GET /health
  */
 export async function checkHealth() {

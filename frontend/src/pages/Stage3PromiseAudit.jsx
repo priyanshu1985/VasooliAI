@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import EscalationFunnel from '../components/EscalationFunnel';
 import AuditTrailTable from '../components/AuditTrailTable';
+import AuditQuestionBox from '../components/AuditQuestionBox';
 import MetricCard from '../components/MetricCard';
 import VoiceRecoverySimulator from '../components/VoiceRecoverySimulator';
 import { getStage3Metrics, getAuditTrail, extractPromiseLive } from '../api/client';
@@ -178,6 +179,9 @@ export default function Stage3PromiseAudit() {
           </div>
         </div>
       </div>
+
+      {/* Feature 2: Ask Your Audit Trail a Question */}
+      <AuditQuestionBox />
 
       <AuditTrailTable rows={rows} totalCount={total_count} />
     </div>

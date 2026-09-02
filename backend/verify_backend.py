@@ -33,7 +33,7 @@ assert "diagnosis_accuracy" in data
 assert "funnel" in data
 assert "money_saved_avoiding_retries" in data
 assert "risk_fraud_avoided_count" in data
-print(f"Money Saved by Avoiding Bad Retries: ₹{data['money_saved_avoiding_retries']} across {data['risk_fraud_avoided_count']} fraud stops")
+print(f"Money Saved by Avoiding Bad Retries: INR {data['money_saved_avoiding_retries']} across {data['risk_fraud_avoided_count']} fraud stops")
 
 print("\n--- Testing /api/stage1 ---")
 r = client.get("/api/stage1")
@@ -147,6 +147,14 @@ r_voice2 = client.post("/api/stage4/voice-response", json={"payment_id": "pay_te
 print("Voice keypress 2 response:", r_voice2.status_code, r_voice2.json())
 assert r_voice2.status_code == 200
 assert r_voice2.json()["action_taken"] == "escalated_outreach"
+
+print("\n--- Testing POST /api/audit/ask (Gemini Audit Trail QA) ---")
+r_ask = client.post("/api/audit/ask", json={"question": "What decisions were made regarding smart retry intervals?"})
+print("Audit ask response:", r_ask.status_code, r_ask.json())
+assert r_ask.status_code == 200
+assert "answer" in r_ask.json()
+assert r_ask.json()["rows_analyzed"] > 0
+print(f"Gemini Audit Trail Answer: {r_ask.json()['answer']}")
 
 print("\n==========================================")
 print("ALL BACKEND SUITE TESTS PASSED WITH 100% SUCCESS!")

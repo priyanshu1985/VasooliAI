@@ -104,4 +104,16 @@ class AuditTrailResponse(BaseModel):
 class PipelineRunResponse(BaseModel):
     status: str
     message: str
-    overview: OverviewResponse
+
+
+class AuditAskRequest(BaseModel):
+    question: str = Field(..., description="Plain-English question about the audit trail")
+    payment_id: Optional[str] = Field(None, description="Optional payment ID filter")
+    time_range: Optional[str] = Field(None, description="Optional time range filter")
+
+
+class AuditAskResponse(BaseModel):
+    question: str
+    answer: str
+    rows_analyzed: int
+    model_used: Optional[str] = "gemini"

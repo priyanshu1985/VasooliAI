@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.db.models import AuditLog
 from app.pipeline_runner import get_pipeline_results, run_pipeline_batch
-from app.stage3_promise.extractor import extract_promise
+from app.stage3_promise.extractor import extract_promise, _get_gemini_client
 from app.webhook.razorpay import verify_razorpay_signature, process_razorpay_webhook_event
 from app.api.schemas import (
     OverviewResponse,
@@ -17,7 +17,9 @@ from app.api.schemas import (
     AuditTrailResponse,
     PipelineRunResponse,
     ExtractPromiseRequest,
-    ExtractPromiseResponse
+    ExtractPromiseResponse,
+    AuditAskRequest,
+    AuditAskResponse
 )
 
 # Illustrative estimated average cost per retry attempt in INR (illustrative estimate, not a real fee schedule)
@@ -153,6 +155,102 @@ def get_audit_trail(
         "rows": filtered_rows[offset:offset + limit],
         "total_count": len(filtered_rows)
     }
+
+
+@router.post("/audit/ask", response_model=AuditAskResponse)
+def ask_audit_trail(
+    payload: AuditAskRequest = Body(...),
+    db: Optional[Session] = Depends(get_db)
+):
+    """
+    Plain-English QA over the decision audit log powered by Gemini LLM.
+    Answers questions strictly using logged historical decisions.
+    """
+    question = payload.question.strip()
+    payment_id = payload.payment_id.strip() if payload.payment_id else None
+
+    if not question:
+        raise HTTPException(status_code=400, detail="Question cannot be empty.")
+
+    rows = []
+    if db is not None:
+        try:
+            query = db.query(AuditLog)
+            if payment_id:
+                query = query.filter(AuditLog.payment_id.ilike(f"%{payment_id}%"))
+            db_rows = query.order_by(AuditLog.timestamp.desc()).limit(30).all()
+            for r in db_rows:
+                rows.append({
+                    "timestamp": r.timestamp.isoformat() if r.timestamp else "",
+                    "stage": r.stage,
+                    "payment_id": r.payment_id,
+                    "decision": r.decision,
+                    "reasoning": str(r.reasoning_inputs),
+                    "outcome": r.outcome or ""
+                })
+        except Exception:
+            pass
+
+    if not rows:
+        pipeline_data = get_pipeline_results()
+        cached_rows = pipeline_data.get("audit", {}).get("rows", [])
+        if payment_id:
+            rows = [r for r in cached_rows if payment_id.lower() in str(r.get("payment_id", "")).lower()][:30]
+        else:
+            rows = cached_rows[:30]
+
+    if not rows:
+        return AuditAskResponse(
+            question=question,
+            answer="No audit log entries were found matching your criteria to answer this question.",
+            rows_analyzed=0,
+            model_used="none"
+        )
+
+    formatted_lines = []
+    for r in rows:
+        formatted_lines.append(
+            f"- [{r.get('timestamp', '')}] Stage: {r.get('stage', '')} | Payment: {r.get('payment_id', '')} | "
+            f"Decision: {r.get('decision', '')} | Outcome: {r.get('outcome', '')} | Reasoning: {r.get('reasoning', '')}"
+        )
+    formatted_data = "\n".join(formatted_lines)
+
+    prompt = (
+        f"Given these logged decisions:\n{formatted_data}\n\n"
+        f"Answer this question in one or two plain-English sentences:\n{question}\n\n"
+        f"Only use the data given, do not invent details not present in the log."
+    )
+
+    answer = None
+    model_used = None
+
+    client = _get_gemini_client()
+    if client is not None:
+        candidate_models = ["gemini-3.6-flash", "gemini-flash-latest", "gemini-2.5-flash-lite", "gemini-pro-latest"]
+        for m_name in candidate_models:
+            try:
+                model = client.GenerativeModel(m_name)
+                resp = model.generate_content(prompt)
+                if resp and resp.text:
+                    answer = resp.text.strip()
+                    model_used = m_name
+                    break
+            except Exception:
+                continue
+
+    if not answer:
+        model_used = "audit-summary-fallback"
+        stages = set(r.get("stage") for r in rows)
+        outcomes = [r.get("outcome") for r in rows if r.get("outcome")]
+        sample_decision = rows[0].get("decision", "") if rows else ""
+        answer = f"Analyzed {len(rows)} logged audit events across {', '.join(stages)}. Latest decision: {sample_decision}."
+
+    return AuditAskResponse(
+        question=question,
+        answer=answer,
+        rows_analyzed=len(rows),
+        model_used=model_used
+    )
 
 
 @router.post("/pipeline/run", response_model=PipelineRunResponse)
