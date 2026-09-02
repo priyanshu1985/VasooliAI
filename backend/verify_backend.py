@@ -133,6 +133,18 @@ assert r_valid.json()["status"] == "success"
 assert r_valid.json()["result"]["payment_id"] == "pay_test_live_rzp_99"
 assert r_valid.json()["result"]["amount_inr"] == 2500.0
 
+print("\n--- Testing POST /api/stage4/voice-response (Keypress 1: Haan) ---")
+r_voice1 = client.post("/api/stage4/voice-response", json={"payment_id": "pay_test_voice_1", "keypress": 1})
+print("Voice keypress 1 response:", r_voice1.status_code, r_voice1.json())
+assert r_voice1.status_code == 200
+assert r_voice1.json()["action_taken"] == "promise_recorded_reminders_paused"
+
+print("\n--- Testing POST /api/stage4/voice-response (Keypress 2: Nahi) ---")
+r_voice2 = client.post("/api/stage4/voice-response", json={"payment_id": "pay_test_voice_2", "keypress": 2})
+print("Voice keypress 2 response:", r_voice2.status_code, r_voice2.json())
+assert r_voice2.status_code == 200
+assert r_voice2.json()["action_taken"] == "escalated_outreach"
+
 print("\n==========================================")
 print("ALL BACKEND SUITE TESTS PASSED WITH 100% SUCCESS!")
 print("==========================================")

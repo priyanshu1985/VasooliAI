@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import EscalationFunnel from '../components/EscalationFunnel';
 import AuditTrailTable from '../components/AuditTrailTable';
 import MetricCard from '../components/MetricCard';
+import VoiceRecoverySimulator from '../components/VoiceRecoverySimulator';
 import { getStage3Metrics, getAuditTrail, extractPromiseLive } from '../api/client';
 
 export default function Stage3PromiseAudit() {
@@ -151,6 +152,9 @@ export default function Stage3PromiseAudit() {
           </div>
         )}
       </div>
+
+      {/* Stage 4 — Hinglish Voice Recovery Simulator */}
+      <VoiceRecoverySimulator paymentId="pay_demo_unresponsive_89" />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         <EscalationFunnel funnel={escalation_funnel} takeaway={takeaway} />

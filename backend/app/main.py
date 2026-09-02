@@ -56,6 +56,9 @@ async def global_exception_handler(request: Request, exc: Exception):
 # Register API routes
 app.include_router(api_router)
 
+from app.api.stage4_voice import router as stage4_router
+app.include_router(stage4_router)
+
 
 @app.get("/health", tags=["system"])
 def health_check():
