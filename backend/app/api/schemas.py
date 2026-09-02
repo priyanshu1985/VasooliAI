@@ -19,6 +19,8 @@ class OverviewResponse(BaseModel):
     recovery_rate: float = Field(..., description="Overall recovery rate percentage")
     diagnosis_accuracy: float = Field(..., description="Stage 1 classification accuracy percentage")
     funnel: FunnelMetrics
+    money_saved_avoiding_retries: float = Field(0.0, description="Estimated money saved in INR by avoiding bad retries on fraud/risk flags")
+    risk_fraud_avoided_count: Optional[int] = Field(0, description="Number of fraud/risk flagged payments correctly not retried")
 
 
 # -------------------------------------------------------------

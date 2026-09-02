@@ -20,18 +20,47 @@ from app.api.schemas import (
     ExtractPromiseResponse
 )
 
+# Illustrative estimated average cost per retry attempt in INR (illustrative estimate, not a real fee schedule)
+ASSUMED_COST_PER_RETRY_INR = 5.0
+
 router = APIRouter(prefix="/api", tags=["dashboard"])
 
 
 @router.get("/overview", response_model=OverviewResponse)
 def get_overview_metrics(db: Optional[Session] = Depends(get_db)):
     """
-    Overview endpoint serving headline recovery metrics and pipeline funnel
-    calculated from the live pipeline run.
+    Overview endpoint serving headline recovery metrics, pipeline funnel,
+    and computed cost savings from avoiding bad retries on fraud/risk flagged payments.
     Data Contract per docs/design.md section 5.
     """
     pipeline_data = get_pipeline_results()
-    return pipeline_data["overview"]
+    overview_data = dict(pipeline_data["overview"])
+
+    # Count Stage 1 risk_fraud_flag payments (correctly identified as NOT worth retrying)
+    risk_fraud_count = 0
+    if db is not None:
+        try:
+            db_risk_count = db.query(AuditLog).filter(
+                AuditLog.stage == "stage1",
+                AuditLog.decision.ilike("%risk_fraud_flag%")
+            ).count()
+            if db_risk_count > 0:
+                risk_fraud_count = db_risk_count
+        except Exception:
+            pass
+
+    if risk_fraud_count == 0 and "audit" in pipeline_data:
+        audit_rows = pipeline_data.get("audit", {}).get("rows", [])
+        risk_fraud_count = sum(
+            1 for row in audit_rows
+            if row.get("stage") == "stage1" and "risk_fraud_flag" in str(row.get("decision", ""))
+        )
+
+    money_saved = round(risk_fraud_count * ASSUMED_COST_PER_RETRY_INR, 2)
+    overview_data["money_saved_avoiding_retries"] = money_saved
+    overview_data["risk_fraud_avoided_count"] = risk_fraud_count
+
+    return overview_data
 
 
 @router.get("/stage1", response_model=Stage1MetricsResponse)

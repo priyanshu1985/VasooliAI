@@ -31,6 +31,9 @@ assert "total_recovered" in data
 assert "recovery_rate" in data
 assert "diagnosis_accuracy" in data
 assert "funnel" in data
+assert "money_saved_avoiding_retries" in data
+assert "risk_fraud_avoided_count" in data
+print(f"Money Saved by Avoiding Bad Retries: ₹{data['money_saved_avoiding_retries']} across {data['risk_fraud_avoided_count']} fraud stops")
 
 print("\n--- Testing /api/stage1 ---")
 r = client.get("/api/stage1")

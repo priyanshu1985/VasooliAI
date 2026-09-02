@@ -64,7 +64,15 @@ export default function Overview() {
     );
   }
 
-  const { total_payments, total_recovered, recovery_rate, diagnosis_accuracy, funnel } = data || {};
+  const {
+    total_payments,
+    total_recovered,
+    recovery_rate,
+    diagnosis_accuracy,
+    funnel,
+    money_saved_avoiding_retries,
+    risk_fraud_avoided_count
+  } = data || {};
 
   return (
     <div className="space-y-8">
@@ -101,8 +109,8 @@ export default function Overview() {
         </div>
       </div>
 
-      {/* 4 Header Metric Cards Across */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+      {/* 5 Header Metric Cards Across */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6">
         <MetricCard
           label="Total Payments Processed"
           value={total_payments?.toLocaleString() || '0'}
@@ -124,6 +132,12 @@ export default function Overview() {
           label="Diagnosis Accuracy"
           value={`${diagnosis_accuracy || 0}%`}
           subtext="Stage 1 Random Forest classifier"
+        />
+        <MetricCard
+          label="Money Saved Avoiding Bad Retries"
+          value={`₹${money_saved_avoiding_retries?.toLocaleString('en-IN', { maximumFractionDigits: 0 }) || '0'}`}
+          delta={`${risk_fraud_avoided_count || 0} stops`}
+          subtext="₹5/attempt saved on fraud flags"
         />
       </div>
 
